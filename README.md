@@ -1,10 +1,25 @@
 # DockerSentinel
 
-A lightweight tool that runs on your own computer, watches your Docker containers, and when one fails, tells you **what went wrong** and **what changed since it last worked**.
+A lightweight tool that runs on your own computer, watches your Docker containers, and when one fails, tells you **what went wrong** and **what changed since it last worked**, then **recovers it automatically with Ansible** and **alerts the registered users on Telegram**.
 
-- Runs locally, needs no server and no account, and sends nothing online.
-- Uses one external library (`docker`). Everything else is Python's standard library.
-- Never changes your containers. It only reads.
+- Runs locally and needs no server or account. The only thing it sends online is Telegram alerts (only if you set up a bot).
+- Uses one external Python library (`docker`). Recovery uses Ansible (`ansible-playbook`).
+- It changes a container only to recover it: restart it, raise its memory limit, or roll it back to the last image that worked. Use `sentinel watch --no-recover` to only diagnose and notify.
+
+### Workflow
+
+```
+ 1. you start Sentinel          sentinel watch
+ 2. you create containers       docker run ... / docker compose up
+ 3. Sentinel monitors them      Docker events + scan every 5 s + memory every 30 s
+ 4. a container fails           diagnosis: HOW it failed + WHAT changed  ->  ticket
+ 5. Sentinel decides the fix    restart / raise memory / roll back / needs a human
+ 6. Ansible runs the fix        sentinel/playbooks/*.yml
+ 7. Sentinel checks the result  running fine for 15 s = recovered
+ 8. Telegram alerts the users   failed, recovered, failed again after recovery,
+                                cannot be recovered automatically, memory leak
+                                (each user chooses alert types, containers, mute)
+```
 
 ---
 
@@ -63,8 +78,18 @@ The developer then has to dig through `docker logs` and `docker inspect` and gue
 │                     │                                                     │
 │                     ▼                                                     │
 │              ticket.py ─── prints the ticket in the terminal              │
+│                     │                                                     │
+│                     ▼                                                     │
+│              recovery.py ─ decides the fix ──► automation.py ──► Ansible   │
+│                     │                          (playbooks/*.yml)          │
+│                     ▼                                                     │
+│              notifier.py ─ Telegram alerts to the registered users        │
 │                                                                           │
-│   cli.py ── the commands: watch / check / history / demo                  │
+│   bot.py ───── Telegram bot: users register with their phone number and   │
+│                choose alerts / containers / mute       (users.py)         │
+│                                                                           │
+│   memory.py ── samples memory of running containers, warns about leaks    │
+│   cli.py ───── the commands: watch / check / history / demo / notify-test │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -80,6 +105,13 @@ The developer then has to dig through `docker logs` and `docker inspect` and gue
 | `ticket.py` | Draws the ticket in the terminal (colors and a box, plain Python). |
 | `cli.py` | The `sentinel` command and its sub-commands. |
 | `demo.py` | `sentinel demo`, a 10-second self-running demonstration. |
+| `recovery.py` | Decides the recovery action from the diagnosis, and follows each failing container until it recovers or needs a human. |
+| `automation.py` | Builds the Ansible variables from `docker inspect` and runs the playbooks. |
+| `playbooks/` | `restart.yml`, `raise_memory.yml`, `rollback.yml` (Ansible, `community.docker` collection). |
+| `notifier.py` | Sends Telegram alerts to every user who wants them, through a background queue (standard library only). |
+| `users.py` | Who receives alerts: allowed phone numbers, registration, each user's preferences. |
+| `bot.py` | The Telegram bot: phone-number registration and the `/alerts`, `/containers`, `/mute` commands. |
+| `memory.py` | Memory-leak detection. |
 
 ---
 
@@ -183,6 +215,39 @@ build: COPY app.sh .      = 91bd02aa7c55
 
 User actions such as `docker stop`, `docker kill` and `docker rm -f` are **not** reported as crashes.
 
+### 4.5 Automatic recovery (Ansible)
+
+After the diagnosis, `recovery.py` picks **one** action from the root cause and runs it with an Ansible playbook:
+
+| Root cause found | Action | Playbook |
+|---|---|---|
+| Killed for using more than its memory limit | Raise the limit by 1.5x (at most twice) | `raise_memory.yml` |
+| A new image build broke it (Dockerfile step, new code, new start command) | Re-create it from the **last good image**, with the same env, ports, volumes and limits | `rollback.yml` |
+| Temporary: a service it needs was not ready, failing health check, nothing changed | Restart (at most twice) | `restart.yml` |
+| Out of memory without any limit | Restart once | `restart.yml` |
+| Docker's own restart policy (`always`, `on-failure`...) restarts it | Nothing, just watch | - |
+| Needs a human: env var removed or changed, port taken, command not found, missing file or library, crash loop, or 3 attempts used up | No action, **Telegram alert** | - |
+
+After an action, Sentinel waits until the container has been **running fine for 15 seconds** and then reports it as recovered. If it fails again within 10 minutes, that counts as **failed again after recovery** and the next action is chosen (for example rollback after a restart did not help). After 3 attempts it gives up and asks a human.
+
+The playbooks run on this machine (`connection: local`) with the `community.docker` collection, using the same Python as Sentinel. Environment values are passed in a private temporary file that is deleted right after.
+
+### 4.6 Telegram alerts
+
+Alerts go to every **registered user** who wants them (see "Telegram setup" below for registration).
+
+| Message | When |
+|---|---|
+| 🔴 failed | every new failure, with the cause and the action Sentinel takes |
+| ✅ recovered | the container runs fine for 15 s after the action |
+| ⚠️ failed again after recovery | it fails again within 10 minutes of an action or recovery |
+| 🆘 cannot be recovered automatically | a human has to fix it (with the suggested fix) |
+| 🧠 possible memory leak | memory rose steadily for ~5 minutes and is above 70% of the limit |
+
+Each user chooses in the bot which **alert types** and which **containers** they want, and can **mute** alerts for a while. Admins also get a message when someone registers, or tries to register with a number that is not allowed.
+
+Memory leaks are only reported, not restarted: the app is still working. If it does run out of memory, the out-of-memory recovery raises its limit.
+
 ---
 
 ## 5. Installation
@@ -191,6 +256,12 @@ User actions such as `docker stop`, `docker kill` and `docker rm -f` are **not**
 
 - **Python 3.9 or newer**
 - **Docker**, installed and running
+- **Ansible** with the `community.docker` collection, for automatic recovery:
+  ```bash
+  sudo apt install ansible        # Ubuntu (includes community.docker)
+  sudo dnf install ansible        # Fedora
+  ansible-galaxy collection install community.docker   # only if it is missing
+  ```
 - **Linux only:** your user must be allowed to use Docker:
   ```bash
   sudo usermod -aG docker $USER
@@ -232,12 +303,58 @@ pipx install -e /path/to/DockerSentinel
 
 | Command | What it does |
 |---|---|
-| `sentinel watch` | Keeps running and prints a ticket for every new problem. **This is the main mode.** |
+| `sentinel watch` | Keeps running: prints a ticket for every new problem, recovers it with Ansible and notifies Telegram. **This is the main mode.** |
+| `sentinel watch --no-recover` | The same, but never changes containers (only diagnose and notify) |
+| `sentinel users add +91... --name N [--admin]` | Allows a phone number to register for Telegram alerts |
+| `sentinel users list` / `remove <phone>` | Shows / removes users |
+| `sentinel notify-test` | Checks the Telegram setup and sends a test message to every registered user |
 | `sentinel check` | Checks all containers once, right now |
 | `sentinel history -n 10` | Shows the last 10 saved tickets |
 | `sentinel demo` | 10-second demonstration with a fake app, no setup needed |
 
 Tickets are saved in `~/.docker-sentinel/sentinel.db`.
+
+### Telegram setup
+
+**Once, by the admin:**
+
+1. In Telegram, open **@BotFather**, send `/newbot`, and copy the token it gives you.
+2. Give Sentinel the token (put this line in `~/.bashrc` so it stays set):
+   ```bash
+   export SENTINEL_TELEGRAM_TOKEN="123456:ABC..."
+   ```
+3. Allow the phone numbers that may receive alerts, **with the country code**:
+   ```bash
+   sentinel users add +91 98765 43210 --name "Jairam" --admin
+   sentinel users add +91 91234 56789 --name "Ravi"
+   sentinel users list
+   ```
+4. Start Sentinel: `sentinel watch`. It prints the bot link, e.g. `https://t.me/MySentinelBot`.
+
+**Each user:**
+
+1. Opens the bot link and presses **Start**.
+2. Taps **📱 Share my phone number**. Telegram proves the number is theirs; Sentinel checks it is on the list and activates them. Unknown numbers are refused (and the admins are told).
+3. Chooses what they want:
+
+| Command | What it does |
+|---|---|
+| `/status` | Shows what you receive |
+| `/alerts` | Buttons to switch each alert type on or off |
+| `/containers` | Buttons to pick containers, or `/containers web db`, `/containers all` |
+| `/mute 2h` | No alerts for 2 hours (`30m`, `1d`...), `/unmute` to resume |
+| `/stop` | No more alerts, `/start` turns them back on |
+| `/users` | (admins) list of users |
+
+`sentinel notify-test` checks the token, prints the bot link and sends a test message to every registered user. A user who blocks the bot is unsubscribed automatically. Telegram's rule is that a bot can only message people who pressed Start, which is why users register in the bot rather than only giving a number.
+
+Without a token, every alert is still printed in the terminal.
+
+### Tests
+
+```bash
+python3 -m unittest discover -s tests
+```
 
 ---
 
@@ -339,6 +456,11 @@ Restore `Dockerfile` and `app.sh` to their original versions.
 | `Could not connect to Docker` | Start Docker: `sudo systemctl start docker`. On Linux, check you are in the `docker` group. |
 | `sentinel: command not found` | Activate the virtual environment first: `source sentinelenv/bin/activate` |
 | `Cannot connect to the Docker daemon at unix:///.../sentinel.sock` | An old setting is left in this terminal: run `unset DOCKER_HOST` |
+| `Auto-recovery: ON, but Ansible is NOT installed` | `sudo apt install ansible` |
+| Playbook fails with `couldn't resolve module/action 'community.docker.docker_container'` | `ansible-galaxy collection install community.docker` |
+| No Telegram messages | Run `sentinel notify-test`. `SENTINEL_TELEGRAM_TOKEN` must be set in the terminal that runs `sentinel watch`, and the user must have pressed Start and shared their number (`sentinel users list` shows `active`). Also check `/status` in the bot: alert types, containers, mute. |
+| Bot says the number is not allowed | Add it with the country code: `sentinel users add +<country><number>`. |
+| `[bot] another program is reading this bot's messages` | Only one `sentinel watch` can use a bot at a time. Stop the other one. |
 | Ticket appears, but without "what changed" | The first run did not run for 15 s while `sentinel watch` was running, or the container name was different. |
 
 ---
@@ -349,11 +471,14 @@ Restore `Dockerfile` and `app.sh` to their original versions.
 - Containers started with `--rm` may be deleted before their logs can be read.
 - `sentinel check` cannot tell a crash from a container you stopped yourself long ago. Only `watch` can.
 - It sees container settings and build steps, **not your source code**. It can say "`app.sh` changed", but not which line.
+- Rollback needs the last good image to still exist locally (not removed with `docker image prune`).
+- Rollback re-creates the container with its env, ports, volumes, limits, restart policy, network and labels. Rarer `docker run` options (devices, capabilities, extra hosts...) are not copied yet.
+- Docker Compose containers are recovered as single containers; Compose itself is not re-run.
 
 ## 9. Roadmap
 
 1. **Hardening:** reconnect when Docker restarts, plus a test for every rule
 2. **Terminal dashboard (TUI):** a live list of containers and tickets
-3. **Desktop notifications** and auto-start in the background
+3. **More notification channels** (email, Slack) and auto-start in the background
 4. **Cross-container root cause:** "`api` failed because `db` crashed first"
 5. **Small ML model** for errors the rules do not recognize

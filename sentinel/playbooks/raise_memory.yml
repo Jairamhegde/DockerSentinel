@@ -1,0 +1,23 @@
+# DockerSentinel recovery: raise the memory limit of a container that was
+# killed for running out of memory, then start it again.
+# The limit is changed in place (docker update), the container is not re-created.
+#
+# Variables (passed by Sentinel):
+#   container_name   name of the container
+#   container_image  current image ID, so the container is NOT re-created
+#   memory           new memory limit in bytes
+#   memory_swap      new memory+swap limit in bytes (left out if swap is unlimited)
+- name: "DockerSentinel - raise memory limit"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Give {{ container_name }} more memory ({{ memory }} bytes) and start it"
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        image: "{{ container_image }}"
+        image_name_mismatch: ignore
+        state: started
+        memory: "{{ memory }}"
+        memory_swap: "{{ memory_swap | default(omit) }}"
+        container_default_behavior: no_defaults

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "docker-sentinel"
 version = "0.1.0"
-description = "Lightweight local tool that detects and diagnoses failing Docker containers."
+description = "Lightweight local tool that detects, diagnoses and recovers failing Docker containers."
 requires-python = ">=3.9"
 dependencies = ["docker>=7.0"]
 
@@ -14,3 +14,6 @@ sentinel = "sentinel.cli:main"
 
 [tool.setuptools]
 packages = ["sentinel"]
+
+[tool.setuptools.package-data]
+sentinel = ["playbooks/*.yml"]

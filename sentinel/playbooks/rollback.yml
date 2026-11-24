@@ -1,0 +1,35 @@
+# DockerSentinel recovery: roll back to the last image that worked.
+# Used when the failure started with a new image build (a changed Dockerfile
+# step, new code, a different start command baked into the image).
+#
+# The container is re-created from the last good image with the same name,
+# environment, ports, volumes, limits and labels. Settings that came from
+# the NEW image (its CMD, ENV, WORKDIR...) are left out on purpose, so the
+# old image's own settings are used again.
+#
+# Variables (passed by Sentinel): container_name, image, and optionally
+# command, entrypoint, env, ports, volumes, working_dir, user,
+# restart_policy, memory, network_mode, labels.
+- name: "DockerSentinel - roll back to last good image"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Re-create {{ container_name }} from image {{ image }}"
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        image: "{{ image }}"
+        state: started
+        recreate: true
+        container_default_behavior: no_defaults
+        command: "{{ command | default(omit) }}"
+        entrypoint: "{{ entrypoint | default(omit) }}"
+        env: "{{ env | default(omit) }}"
+        published_ports: "{{ ports | default(omit) }}"
+        volumes: "{{ volumes | default(omit) }}"
+        working_dir: "{{ working_dir | default(omit) }}"
+        user: "{{ user | default(omit) }}"
+        restart_policy: "{{ restart_policy | default(omit) }}"
+        memory: "{{ memory | default(omit) }}"
+        network_mode: "{{ network_mode | default(omit) }}"
+        labels: "{{ labels | default(omit) }}"

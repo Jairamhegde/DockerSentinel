@@ -113,22 +113,49 @@ def find_changes(evidence):
     Returns a finding for the ticket, or None if there is no earlier
     good run to compare with (for example the very first run).
     """
+    good, data = load_runs(evidence)
+    if good is None:
+        return None
+
+    differences = changes.compare(good["data"], data)
+    return changes.explain(differences, evidence, good["taken_at"])
+
+
+def load_runs(evidence):
+    """
+    (last good snapshot, settings of the failing run), or (None, None)
+    when there is nothing to compare with.
+    """
     app_key = evidence["app_key"]
     data = evidence["snapshot"]
 
     if data is None:
         saved = store.get_snapshot(evidence["id"])
         if saved is None:
-            return None
+            return None, None
         app_key = saved["app_key"]
         data = saved["data"]
 
     good = store.last_good_snapshot(app_key)
     if good is None:
-        return None
+        return None, None
 
-    differences = changes.compare(good["data"], data)
-    return changes.explain(differences, evidence, good["taken_at"])
+    return good, data
+
+
+def change_analysis(evidence):
+    """
+    For the recovery decision: the ranked changes since the last good run
+    (rebuild noise removed) and the image ID of that good run.
+    Returns ([], None) when there is no good run to compare with.
+    """
+    good, data = load_runs(evidence)
+    if good is None:
+        return [], None
+
+    differences = changes.remove_rebuild_noise(changes.compare(good["data"], data))
+    ranked = changes.rank(differences, evidence)
+    return ranked, good["data"].get("image.id")
 
 
 def diagnose_with_history(evidence):

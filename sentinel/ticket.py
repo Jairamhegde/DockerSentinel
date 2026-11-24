@@ -65,7 +65,7 @@ def get_width():
 
 
 def trigger_color(trigger):
-    if trigger == "unhealthy":
+    if trigger == "unhealthy" or trigger == "memory leak":
         return YELLOW
     return RED
 
@@ -142,7 +142,7 @@ def print_ticket(ticket_id, when, trigger, name, image, exit_code, error, findin
     title = "#" + str(ticket_id) + "  " + trigger.upper()
     ticket.add_header(title, when, BOLD + color)
 
-    if trigger == "unhealthy" or trigger == "process killed (OOM)":
+    if trigger in ("unhealthy", "process killed (OOM)", "memory leak"):
         state = "still running"
     else:
         state = "exit " + str(exit_code)

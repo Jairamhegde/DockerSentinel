@@ -1,0 +1,20 @@
+# DockerSentinel recovery: restart a failed container.
+# Used when the failure looks temporary (a service it needs was not ready,
+# a failing health check, or nothing changed since the last good run).
+#
+# Variables (passed by Sentinel):
+#   container_name   name of the container
+#   container_image  current image ID, so the container is NOT re-created
+- name: "DockerSentinel - restart container"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Restart {{ container_name }}"
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        image: "{{ container_image }}"
+        image_name_mismatch: ignore
+        state: started
+        restart: true
+        container_default_behavior: no_defaults
