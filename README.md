@@ -356,6 +356,27 @@ Without a token, every alert is still printed in the terminal.
 python3 -m unittest discover -s tests
 ```
 
+### Live test (real containers, Ansible and Telegram)
+
+```bash
+python3 live_test.py                  # all scenarios, about 4 minutes
+python3 live_test.py restart rollback # only some
+python3 live_test.py --list
+```
+
+It starts `sentinel watch` in the background, then creates containers and breaks them on purpose:
+
+| Scenario | What it does | Expected |
+|---|---|---|
+| `restart` | fails once with "connection refused", then works | failed -> Ansible restart -> recovered |
+| `rollback` | image v1 works, v2 is built without `COPY config.txt .` | failed -> Ansible rollback to v1 -> recovered |
+| `memory` | needs 40 MB with a 32 MB limit | failed (OOM) -> Ansible raises limit to 48 MB -> recovered |
+| `fails-again` | always fails | failed -> restart -> failed again -> restart -> failed again -> cannot be recovered |
+| `needs-human` | start command does not exist | cannot be recovered automatically |
+| `memory-leak` | memory grows 2 MB/s towards a 64 MB limit | possible memory leak |
+
+With `SENTINEL_TELEGRAM_TOKEN` set and users registered, the alerts arrive on their phones. It prints PASS / FAIL for every check, removes everything it created (`--keep` to keep it), and saves Sentinel's full output to `live_test.log`.
+
 ---
 
 ## 6. How to demonstrate it

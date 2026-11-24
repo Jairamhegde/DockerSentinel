@@ -5,3 +5,5 @@ build/
 dist/
 sentinelenv/
 *.db
+live_test.log
+.~lock.*#
